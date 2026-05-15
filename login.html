@@ -100,7 +100,10 @@
             </div>
             <div class="field" style="margin-top:14px">
                 <label>Senha</label>
-                <input type="password" id="senha" placeholder="••••••••"/>
+                <div style="position:relative">
+                 <input type="password" id="senha" placeholder="••••••••" style="width:100%;padding-right:44px"/>
+                 <button onclick="toggleSenha()" type="button" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);background:transparent;border:none;cursor:pointer;color:#5a7090;font-size:18px">👁</button>
+                </div>
             </div>
 
             <button class="btn-salvar" id="btnLogin" onclick="entrar()" style="margin-top:24px">
@@ -139,6 +142,10 @@
                 mostrarSucesso('Conta criada! Verifique seu email para confirmar.')
             }
         }
+        window.toggleSenha = function() {
+    const input = document.getElementById('senha')
+    input.type = input.type === 'password' ? 'text' : 'password'
+}
 
         function mostrarErro(msg) {
             const el = document.getElementById('msgErro')
