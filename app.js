@@ -86,16 +86,6 @@ function editarGasto(i) {
     document.getElementById('gastoDesc').focus();
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
-function salvarFreelance() {
-    const servico = document.getElementById('freeServico').value;
-    const valor = parseFloat(document.getElementById('freeValor').value);
-    const plataforma = document.getElementById('freePlataforma').value;
-    const status = document.getElementById('freeStatus').value;
-    if (!servico || !valor) return alert('Preencha serviço e valor!');
-    dados.freelances.push({ servico, valor, plataforma, status });
-    salvar();
-    renderAba('freelance');
-}
 
 async function deletarFreelance(i) {
     if (confirm('Tem certeza que deseja deletar este serviço?')) {
