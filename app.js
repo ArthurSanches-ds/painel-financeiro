@@ -1,6 +1,13 @@
+import { supabase } from './supabase.js'
+
+// Verifica se está logado
+const { data: { session } } = await supabase.auth.getSession()
+if (!session) window.location.href = 'login.html'
+
+const userId = session.user.id
 const fmt = v => 'R$ ' + Number(v || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2});
 
-let dados = JSON.parse(localStorage.getItem('financas')) || {
+let dados = {
     salario: 0,
     gastos: [],
     freelances: [],
@@ -8,25 +15,76 @@ let dados = JSON.parse(localStorage.getItem('financas')) || {
     objetivos: []
 };
 
-function salvar() {
-    localStorage.setItem('financas', JSON.stringify(dados));
+// Carrega dados do Supabase
+async function carregarDados() {
+    const [perfil, gastos, freelances, uber, objetivos] = await Promise.all([
+        supabase.from('profiles').select('*').eq('id', userId).single(),
+        supabase.from('gastos').select('*').eq('user_id', userId),
+        supabase.from('freelances').select('*').eq('user_id', userId),
+        supabase.from('uber').select('*').eq('user_id', userId),
+        supabase.from('objetivos').select('*').eq('user_id', userId),
+    ])
+    
+    if (perfil.data) dados.salario = perfil.data.salario || 0
+    if (gastos.data) dados.gastos = gastos.data
+    if (freelances.data) dados.freelances = freelances.data
+    if (uber.data) dados.uber = uber.data
+    if (objetivos.data) dados.objetivos = objetivos.data
+    
+    renderAba('home')
 }
-function salvarGasto() {
+
+carregarDados()
+let editandoGasto = null;
+let editandoFreelance = null;
+let editandoUber = null;
+let editandoObjetivo = null;
+async function salvar() {
+    await supabase.from('profiles').upsert({ 
+        id: userId, 
+        salario: dados.salario 
+    })
+}
+async function salvarSalario() {
+    const valor = parseFloat(document.getElementById('inputSalario').value || 0);
+    dados.salario = valor;
+    await supabase.from('profiles').upsert({ id: userId, salario: valor });
+    await carregarDados();
+    renderAba('home');
+}
+async function salvarGasto() {
     const desc = document.getElementById('gastoDesc').value;
     const valor = parseFloat(document.getElementById('gastoValor').value);
     const tipo = document.getElementById('gastoTipo').value;
     if (!desc || !valor) return alert('Preencha descrição e valor!');
-    dados.gastos.push({ descricao: desc, valor, tipo });
-    salvar();
+
+    if (editandoGasto !== null) {
+        const id = dados.gastos[editandoGasto].id;
+        await supabase.from('gastos').update({ descricao: desc, valor, tipo }).eq('id', id);
+        editandoGasto = null;
+    } else {
+        await supabase.from('gastos').insert({ user_id: userId, descricao: desc, valor, tipo });
+    }
+    await carregarDados();
     renderAba('gastos');
 }
-
-function deletarGasto(i) {
+async function deletarGasto(i) {
     if (confirm('Tem certeza que deseja deletar este gasto?')) {
-        dados.gastos.splice(i, 1);
-        salvar();
+        const id = dados.gastos[i].id;
+        await supabase.from('gastos').delete().eq('id', id);
+        await carregarDados();
         renderAba('gastos');
     }
+}
+function editarGasto(i) {
+    const g = dados.gastos[i];
+    document.getElementById('gastoDesc').value = g.descricao;
+    document.getElementById('gastoValor').value = g.valor;
+    document.getElementById('gastoTipo').value = g.tipo;
+    document.getElementById('btnSalvarGasto').textContent = '✔ Atualizar Gasto';
+    editandoGasto = i;
+    document.getElementById('gastoDesc').focus();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 function salvarFreelance() {
     const servico = document.getElementById('freeServico').value;
@@ -39,10 +97,11 @@ function salvarFreelance() {
     renderAba('freelance');
 }
 
-function deletarFreelance(i) {
+async function deletarFreelance(i) {
     if (confirm('Tem certeza que deseja deletar este serviço?')) {
-        dados.freelances.splice(i, 1);
-        salvar();
+        const id = dados.freelances[i].id;
+        await supabase.from('freelances').delete().eq('id', id);
+        await carregarDados();
         renderAba('freelance');
     }
 }
@@ -104,6 +163,10 @@ function paginaHome() {
                 <div class="kpi-icone">💼</div>
                 <div class="kpi-label">Salário</div>
                 <div class="kpi-valor">${fmt(dados.salario)}</div>
+                <div style="margin-top:10px;display:flex;gap:8px">
+                 <input type="number" id="inputSalario" value="${dados.salario}" style="background:#111827;border:1px solid #1e2d45;border-radius:10px;padding:10px;color:#f0ece4;font-size:14px;flex:1"/>
+                 <button onclick="salvarSalario()" style="background:#e8a820;border:none;border-radius:10px;padding:10px 16px;font-weight:700;cursor:pointer">💾</button>
+            </div>
             </div>
             <div class="kpi-card" style="--cor: #4a9eff">
                 <div class="kpi-icone">💻</div>
@@ -170,7 +233,7 @@ function paginaGastos() {
                     </select>
                 </div>
             </div>
-            <button class="btn-salvar" onclick="salvarGasto()">Salvar Gasto</button>
+           <button class="btn-salvar" id="btnSalvarGasto" onclick="salvarGasto()">Salvar Gasto</button>
         </div>
 
         <div class="tabela-wrap">
@@ -190,7 +253,10 @@ function paginaGastos() {
                             <td>${g.descricao}</td>
                             <td style="color:#f05070;font-weight:700">${fmt(g.valor)}</td>
                             <td><span class="badge ${g.tipo === 'Fixo' ? 'badge-red' : 'badge-gold'}">${g.tipo}</span></td>
-                            <td><button class="btn-del" onclick="deletarGasto(${dados.gastos.length - 1 - i})">✕</button></td>
+                         <td>
+                            <button class="btn-edit" onclick="editarGasto(${dados.gastos.length - 1 - i})">✏️</button>
+                            <button class="btn-del" onclick="deletarGasto(${dados.gastos.length - 1 - i})">✕</button>
+                        </td>   
                         </tr>
                     `).join('')}
                 </tbody>
@@ -270,7 +336,7 @@ function paginaFreelance() {
                     </select>
                 </div>
             </div>
-            <button class="btn-salvar" onclick="salvarFreelance()">Salvar Serviço</button>
+            <button class="btn-salvar" id="btnSalvarFreelance" onclick="salvarFreelance()">Salvar Serviço</button>
         </div>
 
         <div class="tabela-wrap" id="tabelaFreelance">
@@ -299,7 +365,10 @@ function tabelaFreelance(lista) {
                         <td style="color:#26d9a0;font-weight:700">${fmt(f.valor)}</td>
                         <td><span class="badge badge-blue">${f.plataforma}</span></td>
                         <td><span class="badge ${f.status === 'pago' ? 'badge-green' : f.status === 'cancelado' ? 'badge-red' : 'badge-gold'}">${f.status === 'pago' ? '✅ Pago' : f.status === 'cancelado' ? '❌ Cancelado' : '⏳ Aguardando'}</span></td>
-                        <td><button class="btn-del" onclick="deletarFreelance(${dados.freelances.length - 1 - i})">✕</button></td>
+                       <td>
+                         <button class="btn-edit" onclick="editarFreelance(${dados.freelances.length - 1 - i})">✏️</button>
+                          <button class="btn-del" onclick="deletarFreelance(${dados.freelances.length - 1 - i})">✕</button>
+                        </td>
                     </tr>
                 `).join('')}
             </tbody>
@@ -320,7 +389,7 @@ function toggleOutraPlataforma() {
     input.style.display = select.value === 'outro' ? 'block' : 'none';
 }
 
-function salvarFreelance() {
+async function salvarFreelance() {
     const servico = document.getElementById('freeServico').value;
     const valor = parseFloat(document.getElementById('freeValor').value);
     const plataforma = document.getElementById('freePlataforma').value === 'outro'
@@ -328,9 +397,36 @@ function salvarFreelance() {
         : document.getElementById('freePlataforma').value;
     const status = document.getElementById('freeStatus').value;
     if (!servico || !valor) return alert('Preencha serviço e valor!');
-    dados.freelances.push({ servico, valor, plataforma, status });
-    salvar();
+
+    if (editandoFreelance !== null) {
+        const id = dados.freelances[editandoFreelance].id;
+        await supabase.from('freelances').update({ servico, valor, plataforma, status }).eq('id', id);
+        editandoFreelance = null;
+    } else {
+        await supabase.from('freelances').insert({ user_id: userId, servico, valor, plataforma, status });
+    }
+    await carregarDados();
     renderAba('freelance');
+}
+function editarFreelance(i) {
+    const f = dados.freelances[i];
+    document.getElementById('freeServico').value = f.servico;
+    document.getElementById('freeValor').value = f.valor;
+    document.getElementById('freeStatus').value = f.status;
+    
+    const select = document.getElementById('freePlataforma');
+    const opcoes = ['99Freelas', 'Workana', 'Fiverr'];
+    if (opcoes.includes(f.plataforma)) {
+        select.value = f.plataforma;
+    } else {
+        select.value = 'outro';
+        document.getElementById('freeOutraPlataforma').style.display = 'block';
+        document.getElementById('freeOutraPlataforma').value = f.plataforma;
+    }
+    
+    document.getElementById('btnSalvarFreelance').textContent = '✔ Atualizar Serviço';
+    editandoFreelance = i;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function deletarFreelance(i) {
@@ -407,7 +503,7 @@ function paginaUber() {
                     <input type="number" id="uberManut" placeholder="0,00"/>
                 </div>
             </div>
-            <button class="btn-salvar" onclick="salvarUber()">Salvar Dia</button>
+           <button class="btn-salvar" id="btnSalvarUber" onclick="salvarUber()">Salvar Dia</button>
         </div>
 
         <div class="tabela-wrap">
@@ -431,7 +527,10 @@ function paginaUber() {
                             <td style="color:#f05070">${fmt(d.combustivel || 0)}</td>
                             <td style="color:#4a9eff">${fmt(d.manutencao || 0)}</td>
                             <td style="color:#e8a820;font-weight:700">${fmt((d.corridas||0)-(d.combustivel||0)-(d.manutencao||0))}</td>
-                            <td><button class="btn-del" onclick="deletarUber(${diasMes.length - 1 - i})">✕</button></td>
+                           <td>
+                            <button class="btn-edit" onclick="editarUber(${dados.uber.indexOf(diasMes[diasMes.length - 1 - i])})">✏️</button>
+                            <button class="btn-del" onclick="deletarUber(${diasMes.length - 1 - i})">✕</button>
+                            </td>
                         </tr>
                     `).join('')}
                 </tbody>
@@ -452,26 +551,41 @@ function uberDiasFiltrados() {
 function mudarMesUber(val) { dados.uberMes = parseInt(val); salvar(); renderAba('uber'); }
 function mudarAnoUber(val) { dados.uberAno = parseInt(val); salvar(); renderAba('uber'); }
 
-function salvarUber() {
+async function salvarUber() {
     const data = document.getElementById('uberData').value;
     const corridas = parseFloat(document.getElementById('uberCorridas').value || 0);
     const combustivel = parseFloat(document.getElementById('uberCombust').value || 0);
     const manutencao = parseFloat(document.getElementById('uberManut').value || 0);
     if (!data || !corridas) return alert('Preencha a data e o valor das corridas!');
-    dados.uber.push({ data, corridas, combustivel, manutencao });
-    salvar();
+
+    if (editandoUber !== null) {
+        const id = dados.uber[editandoUber].id;
+        await supabase.from('uber').update({ data, corridas, combustivel, manutencao }).eq('id', id);
+        editandoUber = null;
+    } else {
+        await supabase.from('uber').insert({ user_id: userId, data, corridas, combustivel, manutencao });
+    }
+    await carregarDados();
     renderAba('uber');
 }
-
-function deletarUber(i) {
+async function deletarUber(i) {
     const diasMes = uberDiasFiltrados();
     const itemReal = diasMes[diasMes.length - 1 - i];
-    const idx = dados.uber.indexOf(itemReal);
     if (confirm('Tem certeza que deseja deletar este dia?')) {
-        dados.uber.splice(idx, 1);
-        salvar();
+        await supabase.from('uber').delete().eq('id', itemReal.id);
+        await carregarDados();
         renderAba('uber');
     }
+}
+function editarUber(i) {
+    const u = dados.uber[i];
+    document.getElementById('uberData').value = u.data;
+    document.getElementById('uberCorridas').value = u.corridas;
+    document.getElementById('uberCombust').value = u.combustivel || 0;
+    document.getElementById('uberManut').value = u.manutencao || 0;
+    document.getElementById('btnSalvarUber').textContent = '✔ Atualizar Dia';
+    editandoUber = i;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 function paginaDashboard() {
     const totalEntradas = dados.salario + 
@@ -603,7 +717,7 @@ function paginaObjetivos() {
                     <div id="objParcela" style="padding:12px 14px;background:#111827;border:1px solid #1e2d45;border-radius:10px;color:#e8a820;font-weight:700;font-size:14px">R$ 0,00</div>
                 </div>
             </div>
-            <button class="btn-salvar" onclick="salvarObjetivo()">Salvar Objetivo</button>
+            <button class="btn-salvar" id="btnSalvarObjetivo" onclick="salvarObjetivo()">Salvar Objetivo</button>
         </div>
 
         <div class="tabela-wrap">
@@ -625,7 +739,10 @@ function paginaObjetivos() {
                             <td style="color:#e8a820;font-weight:700">${fmt(o.valor)}</td>
                             <td><span class="badge badge-blue">${o.parcelas === 1 ? 'À vista' : o.parcelas + 'x'}</span></td>
                             <td style="color:#26d9a0;font-weight:700">${fmt(o.valor / o.parcelas)}</td>
-                            <td><button class="btn-del" onclick="deletarObjetivo(${dados.objetivos.length - 1 - i})">✕</button></td>
+                           <td>
+                        <button class="btn-edit" onclick="editarObjetivo(${dados.objetivos.length - 1 - i})">✏️</button>
+                        <button class="btn-del" onclick="deletarObjetivo(${dados.objetivos.length - 1 - i})">✕</button>
+                        </td>
                         </tr>
                     `).join('')}
                 </tbody>
@@ -639,22 +756,40 @@ function calcularParcela() {
     document.getElementById('objParcela').textContent = fmt(valor / parcelas);
 }
 
-function salvarObjetivo() {
+async function salvarObjetivo() {
     const nome = document.getElementById('objNome').value;
     const valor = parseFloat(document.getElementById('objValor').value);
     const parcelas = parseInt(document.getElementById('objParcelas').value);
     if (!nome || !valor) return alert('Preencha o objetivo e o valor!');
-    dados.objetivos.push({ nome, valor, parcelas });
-    salvar();
+
+    if (editandoObjetivo !== null) {
+        const id = dados.objetivos[editandoObjetivo].id;
+        await supabase.from('objetivos').update({ nome, valor, parcelas }).eq('id', id);
+        editandoObjetivo = null;
+    } else {
+        await supabase.from('objetivos').insert({ user_id: userId, nome, valor, parcelas });
+    }
+    await carregarDados();
     renderAba('objetivos');
 }
 
-function deletarObjetivo(i) {
+async function deletarObjetivo(i) {
     if (confirm('Tem certeza que deseja deletar este objetivo?')) {
-        dados.objetivos.splice(i, 1);
-        salvar();
+        const id = dados.objetivos[i].id;
+        await supabase.from('objetivos').delete().eq('id', id);
+        await carregarDados();
         renderAba('objetivos');
     }
+}
+function editarObjetivo(i) {
+    const o = dados.objetivos[i];
+    document.getElementById('objNome').value = o.nome;
+    document.getElementById('objValor').value = o.valor;
+    document.getElementById('objParcelas').value = o.parcelas;
+    calcularParcela();
+    document.getElementById('btnSalvarObjetivo').textContent = '✔ Atualizar Objetivo';
+    editandoObjetivo = i;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 function paginaFinbot() {
     const totalEntradas = dados.salario + dados.freelances.reduce((s,f)=>s+f.valor,0) + dados.uber.reduce((s,u)=>s+u.corridas,0);

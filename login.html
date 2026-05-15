@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>💰 Finanças — Login</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .login-wrap {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .login-card {
+            background: #0c1220;
+            border: 1px solid #1e2d45;
+            border-radius: 20px;
+            padding: 40px;
+            width: 100%;
+            max-width: 420px;
+        }
+        .login-logo {
+            font-size: 32px;
+            font-weight: 700;
+            color: #e8a820;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+        .login-logo span { color: #f0ece4; }
+        .login-sub {
+            text-align: center;
+            color: #5a7090;
+            font-size: 13px;
+            margin-bottom: 32px;
+        }
+        .login-tabs {
+            display: flex;
+            background: #111827;
+            border-radius: 10px;
+            padding: 4px;
+            margin-bottom: 24px;
+        }
+        .login-tab {
+            flex: 1;
+            padding: 10px;
+            border: none;
+            background: transparent;
+            color: #5a7090;
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        .login-tab.active {
+            background: #1e2d45;
+            color: #f0ece4;
+        }
+        .msg-erro {
+            background: #3d0a18;
+            border: 1px solid #f05070;
+            color: #f05070;
+            padding: 10px 14px;
+            border-radius: 10px;
+            font-size: 13px;
+            margin-bottom: 16px;
+            display: none;
+        }
+        .msg-sucesso {
+            background: #0a3d2b;
+            border: 1px solid #26d9a0;
+            color: #26d9a0;
+            padding: 10px 14px;
+            border-radius: 10px;
+            font-size: 13px;
+            margin-bottom: 16px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-wrap">
+        <div class="login-card">
+            <div class="login-logo">Finan<span>ças</span></div>
+            <div class="login-sub">Seu painel financeiro pessoal</div>
+
+            <div class="login-tabs">
+                <button class="login-tab active" onclick="trocarAba('entrar')">Entrar</button>
+                <button class="login-tab" onclick="trocarAba('cadastrar')">Cadastrar</button>
+            </div>
+
+            <div id="msgErro" class="msg-erro"></div>
+            <div id="msgSucesso" class="msg-sucesso"></div>
+
+            <div class="field">
+                <label>Email</label>
+                <input type="email" id="email" placeholder="seu@email.com"/>
+            </div>
+            <div class="field" style="margin-top:14px">
+                <label>Senha</label>
+                <input type="password" id="senha" placeholder="••••••••"/>
+            </div>
+
+            <button class="btn-salvar" id="btnLogin" onclick="entrar()" style="margin-top:24px">
+                Entrar
+            </button>
+        </div>
+    </div>
+
+    <script type="module">
+        import { supabase } from './supabase.js'
+
+        let abaAtual = 'entrar'
+
+        window.trocarAba = function(aba) {
+            abaAtual = aba
+            document.querySelectorAll('.login-tab').forEach((t, i) => {
+                t.classList.toggle('active', (aba === 'entrar' && i === 0) || (aba === 'cadastrar' && i === 1))
+            })
+            document.getElementById('btnLogin').textContent = aba === 'entrar' ? 'Entrar' : 'Criar Conta'
+            document.getElementById('msgErro').style.display = 'none'
+            document.getElementById('msgSucesso').style.display = 'none'
+        }
+
+        window.entrar = async function() {
+            const email = document.getElementById('email').value
+            const senha = document.getElementById('senha').value
+            if (!email || !senha) return mostrarErro('Preencha email e senha!')
+
+            if (abaAtual === 'entrar') {
+                const { error } = await supabase.auth.signInWithPassword({ email, password: senha })
+                if (error) return mostrarErro('Email ou senha incorretos!')
+                window.location.href = 'index.html'
+            } else {
+                const { error } = await supabase.auth.signUp({ email, password: senha })
+                if (error) return mostrarErro('Erro ao criar conta: ' + error.message)
+                mostrarSucesso('Conta criada! Verifique seu email para confirmar.')
+            }
+        }
+
+        function mostrarErro(msg) {
+            const el = document.getElementById('msgErro')
+            el.textContent = msg
+            el.style.display = 'block'
+        }
+
+        function mostrarSucesso(msg) {
+            const el = document.getElementById('msgSucesso')
+            el.textContent = msg
+            el.style.display = 'block'
+        }
+
+        // Verifica se já está logado
+        const { data: { session } } = await supabase.auth.getSession()
+        if (session) window.location.href = 'index.html'
+    </script>
+</body>
+</html>
