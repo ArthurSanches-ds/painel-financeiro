@@ -87,14 +87,7 @@ function editarGasto(i) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-async function deletarFreelance(i) {
-    if (confirm('Tem certeza que deseja deletar este serviço?')) {
-        const id = dados.freelances[i].id;
-        await supabase.from('freelances').delete().eq('id', id);
-        await carregarDados();
-        renderAba('freelance');
-    }
-}
+
 
 // ── NAVEGAÇÃO ENTRE ABAS ──
 document.querySelectorAll('.tab-btn').forEach(btn => {
