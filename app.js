@@ -175,7 +175,7 @@ async function deletarGasto(id) {
 }
 
 async function togglePagoGasto(id) {
-    const g = dados.gastos.find(x => x.id === id)
+    const g = dados.gastos.find(x => String(x.id) === String(id))
     const jaPago = pagoNoMes(g, mesAtual, anoAtual)
     await supabase.from('gastos').update({
         pago_mes: jaPago ? null : mesAtual,
@@ -253,7 +253,7 @@ function paginaHome() {
                         <div class="fonte-item">
                             <span>${e.data.split('-').reverse().slice(0, 2).join('/')}</span>
                             <span>${fmt(e.valor)}</span>
-                            <button class="btn-mini" onclick="deletarEntrada(${e.id})" title="Apagar">✕</button>
+                            <button class="btn-mini" onclick="deletarEntrada('${e.id}')" title="Apagar">✕</button>
                         </div>`).join('')}
                 </div>` : ''}
             </div>`
@@ -280,7 +280,7 @@ function paginaGastos() {
         .map(g => ({ g, st: statusGasto(g) }))
         .sort((a, b) => a.st.ordem - b.st.ordem || (a.g.dia_vencimento || 99) - (b.g.dia_vencimento || 99))
 
-    const g = editandoGasto !== null ? dados.gastos.find(x => x.id === editandoGasto) : null
+    const g = editandoGasto !== null ? dados.gastos.find(x => String(x.id) === String(editandoGasto)) : null
     const parcAtualEdit = g?.parcelas_total ? parcelaNoMes(g, mesAtual, anoAtual) : ''
 
     const form = formGastoAberto ? `
@@ -325,9 +325,9 @@ function paginaGastos() {
                 <div class="gb-valor">${fmt(g.valor)}</div>
                 <div class="gb-status">${st.label}</div>
                 <div class="gb-acoes">
-                    <button class="gb-pagar" onclick="togglePagoGasto(${g.id})">${pago ? 'Desmarcar' : '✓ Paguei'}</button>
-                    <button class="btn-edit" onclick="editarGasto(${g.id})">✏️</button>
-                    <button class="btn-del" onclick="deletarGasto(${g.id})">✕</button>
+                    <button class="gb-pagar" onclick="togglePagoGasto('${g.id}')">${pago ? 'Desmarcar' : '✓ Paguei'}</button>
+                    <button class="btn-edit" onclick="editarGasto('${g.id}')">✏️</button>
+                    <button class="btn-del" onclick="deletarGasto('${g.id}')">✕</button>
                 </div>
             </div>`
         }).join('')
