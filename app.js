@@ -1,735 +1,432 @@
 import { supabase } from './supabase.js'
 
-// Verifica se está logado
+// ── SESSÃO ──
 const { data: { session } } = await supabase.auth.getSession()
 if (!session) window.location.href = 'login.html'
 
 const userId = session.user.id
-const userEmail = session.user.email
+document.getElementById('userEmail').textContent = session.user.email
 
-document.getElementById('userEmail').textContent = userEmail
+// ── HELPERS ──
+const fmt = v => 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+const num = v => parseFloat(String(v ?? '').replace(',', '.'))
+const MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+const MESES_CURTOS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
 
-const fmt = v => 'R$ ' + Number(v || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2});
-const mesAtual = new Date().getMonth() + 1;
-const anoAtual = new Date().getFullYear();
+const hoje = new Date()
+const mesAtual = hoje.getMonth() + 1   // 1-12
+const anoAtual = hoje.getFullYear()
+const hojeISO = `${anoAtual}-${String(mesAtual).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`
 
-let abaAtiva = 'home';
-let editandoGasto = null;
-let editandoFreelance = null;
-let editandoUber = null;
-let editandoObjetivo = null;
+const FONTES = [
+    { id: 'vilarejo', nome: 'Vilarejo', icone: '💼', cor: '#26d9a0' },
+    { id: 'gs',       nome: 'GS Soluções Digitais', icone: '📣', cor: '#4a9eff' },
+    { id: 'gs3d',     nome: 'GS 3D Studio', icone: '🖨️', cor: '#e8a820' },
+    { id: 'uber',     nome: 'Uber', icone: '🚗', cor: '#9b7fe8' },
+]
 
-let dados = {
-    salario: 0,
-    gastos: [],
-    freelances: [],
-    uber: [],
-    objetivos: []
-};
+// ── ESTADO ──
+let abaAtiva = 'home'
+let selMes = mesAtual
+let selAno = anoAtual
+let fonteAberta = null      // fonte com formulário de lançamento aberto
+let editandoGasto = null    // id do gasto em edição
+let formGastoAberto = false
+
+let dados = { gastos: [], entradas: [] }
+
+// ── LÓGICA DE MÊS ──
+const chaveMes = (m, a) => a * 12 + (m - 1)
+
+function entradasDoMes(m, a) {
+    return dados.entradas.filter(e => {
+        const [ano, mes] = e.data.split('-').map(Number)
+        return mes === m && ano === a
+    })
+}
+
+// Número da parcela no mês (1..total) ou null se não for parcelado
+function parcelaNoMes(g, m, a) {
+    if (!g.parcelas_total) return null
+    return chaveMes(m, a) - chaveMes(g.parcela_inicio_mes, g.parcela_inicio_ano) + 1
+}
+
+// Gasto conta no mês? Recorrentes sempre; parcelados só dentro do intervalo
+function gastoAtivo(g, m, a) {
+    const p = parcelaNoMes(g, m, a)
+    return p === null || (p >= 1 && p <= g.parcelas_total)
+}
+
+const gastosDoMes = (m, a) => dados.gastos.filter(g => gastoAtivo(g, m, a))
+const pagoNoMes = (g, m, a) => g.pago_mes === m && g.pago_ano === a
+
+function resumoMes(m, a) {
+    const entradas = entradasDoMes(m, a).reduce((s, e) => s + Number(e.valor), 0)
+    const gastos = gastosDoMes(m, a)
+    const contas = gastos.reduce((s, g) => s + Number(g.valor), 0)
+    const pago = gastos.filter(g => pagoNoMes(g, m, a)).reduce((s, g) => s + Number(g.valor), 0)
+    return { entradas, contas, pago, pendente: contas - pago, sobra: entradas - contas }
+}
+
+// ── CARREGAR ──
+async function carregarDados() {
+    const [gastos, entradas] = await Promise.all([
+        supabase.from('gastos').select('*').eq('user_id', userId).order('id'),
+        supabase.from('entradas').select('*').eq('user_id', userId).order('data', { ascending: false }),
+    ])
+    if (gastos.error) console.error(gastos.error)
+    if (entradas.error) {
+        console.error(entradas.error)
+        alert('Erro ao carregar entradas. Você já rodou o SQL de migração no Supabase?')
+    }
+    dados.gastos = gastos.data || []
+    dados.entradas = entradas.data || []
+    renderAba(abaAtiva)
+}
+
+// ── ENTRADAS ──
+function abrirFonte(id) {
+    fonteAberta = fonteAberta === id ? null : id
+    renderAba('home')
+    if (fonteAberta) document.getElementById('entValor')?.focus()
+}
+
+async function salvarEntrada() {
+    const valor = num(document.getElementById('entValor').value)
+    const data = document.getElementById('entData').value
+    if (!valor || valor <= 0 || !data) return alert('Preencha valor e data!')
+    const { error } = await supabase.from('entradas').insert({ user_id: userId, fonte: fonteAberta, valor, data })
+    if (error) return alert('Erro ao salvar: ' + error.message)
+    fonteAberta = null
+    await carregarDados()
+}
+
+async function deletarEntrada(id) {
+    if (!confirm('Apagar este recebimento?')) return
+    await supabase.from('entradas').delete().eq('id', id)
+    await carregarDados()
+}
+
+function mudarMes(delta) {
+    const k = chaveMes(selMes, selAno) + delta
+    selAno = Math.floor(k / 12)
+    selMes = (k % 12) + 1
+    fonteAberta = null
+    renderAba(abaAtiva)
+}
+
+// ── GASTOS ──
+function abrirFormGasto() {
+    formGastoAberto = !formGastoAberto
+    editandoGasto = null
+    renderAba('gastos')
+}
+
+function toggleParcelado() {
+    const on = document.getElementById('gastoParcelado').checked
+    document.getElementById('camposParcela').style.display = on ? 'grid' : 'none'
+}
+
+async function salvarGasto() {
+    const descricao = document.getElementById('gastoDesc').value.trim()
+    const valor = num(document.getElementById('gastoValor').value)
+    const tipo = document.getElementById('gastoTipo').value
+    const diaRaw = parseInt(document.getElementById('gastoDia').value)
+    const dia_vencimento = diaRaw >= 1 && diaRaw <= 31 ? diaRaw : null
+    const parcelado = document.getElementById('gastoParcelado').checked
+
+    if (!descricao || !valor) return alert('Preencha descrição e valor!')
+
+    const registro = { descricao, valor, tipo, dia_vencimento, parcelas_total: null, parcela_inicio_mes: null, parcela_inicio_ano: null }
+
+    if (parcelado) {
+        const total = parseInt(document.getElementById('gastoParcTotal').value)
+        const atual = parseInt(document.getElementById('gastoParcAtual').value)
+        if (!total || total < 2 || !atual || atual < 1 || atual > total) return alert('Parcelas inválidas! Ex: estou na 3 de 10.')
+        // "Este mês é a parcela X" → calcula o mês da 1ª parcela
+        const k = chaveMes(mesAtual, anoAtual) - (atual - 1)
+        registro.parcelas_total = total
+        registro.parcela_inicio_ano = Math.floor(k / 12)
+        registro.parcela_inicio_mes = (k % 12) + 1
+    }
+
+    const { error } = editandoGasto !== null
+        ? await supabase.from('gastos').update(registro).eq('id', editandoGasto)
+        : await supabase.from('gastos').insert({ ...registro, user_id: userId })
+    if (error) return alert('Erro ao salvar: ' + error.message)
+
+    editandoGasto = null
+    formGastoAberto = false
+    await carregarDados()
+}
+
+function editarGasto(id) {
+    editandoGasto = id
+    formGastoAberto = true
+    renderAba('gastos')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+async function deletarGasto(id) {
+    if (!confirm('Apagar este gasto?')) return
+    await supabase.from('gastos').delete().eq('id', id)
+    await carregarDados()
+}
+
+async function togglePagoGasto(id) {
+    const g = dados.gastos.find(x => x.id === id)
+    const jaPago = pagoNoMes(g, mesAtual, anoAtual)
+    await supabase.from('gastos').update({
+        pago_mes: jaPago ? null : mesAtual,
+        pago_ano: jaPago ? null : anoAtual,
+    }).eq('id', id)
+    await carregarDados()
+}
+
+// Status do bloco no mês atual
+function statusGasto(g) {
+    if (pagoNoMes(g, mesAtual, anoAtual)) return { cls: 'pago', label: '✅ Pago', ordem: 3 }
+    if (!g.dia_vencimento) return { cls: 'neutro', label: 'Sem vencimento', ordem: 2 }
+    const diff = g.dia_vencimento - hoje.getDate()
+    if (diff < 0) return { cls: 'atrasado', label: `Venceu dia ${g.dia_vencimento}`, ordem: 0 }
+    if (diff === 0) return { cls: 'breve', label: 'Vence hoje', ordem: 1 }
+    if (diff <= 3) return { cls: 'breve', label: `Vence em ${diff} dia${diff > 1 ? 's' : ''}`, ordem: 1 }
+    return { cls: 'neutro', label: `Vence dia ${g.dia_vencimento}`, ordem: 2 }
+}
+
+// ── NAVEGAÇÃO ──
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', function () {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'))
+        this.classList.add('active')
+        abaAtiva = this.dataset.tab
+        renderAba(abaAtiva)
+    })
+})
+
+function renderAba(aba) {
+    const c = document.getElementById('conteudo')
+    if (aba === 'home') c.innerHTML = paginaHome()
+    if (aba === 'gastos') c.innerHTML = paginaGastos()
+    if (aba === 'dashboard') c.innerHTML = paginaDashboard()
+}
+
+function seletorMes() {
+    const ehAtual = selMes === mesAtual && selAno === anoAtual
+    return `
+        <div class="mes-nav">
+            <button class="mes-btn" onclick="mudarMes(-1)">‹</button>
+            <div class="mes-nome">${MESES[selMes - 1]} ${selAno}${ehAtual ? '' : ' <span class="mes-tag">histórico</span>'}</div>
+            <button class="mes-btn" onclick="mudarMes(1)">›</button>
+        </div>`
+}
+
+// ── PÁGINAS ──
+function paginaHome() {
+    const r = resumoMes(selMes, selAno)
+    const entMes = entradasDoMes(selMes, selAno)
+
+    const cardsFontes = FONTES.map(f => {
+        const lista = entMes.filter(e => e.fonte === f.id)
+        const total = lista.reduce((s, e) => s + Number(e.valor), 0)
+        const aberto = fonteAberta === f.id
+        return `
+            <div class="fonte-card ${aberto ? 'aberto' : ''}" style="--cor:${f.cor}">
+                <div class="fonte-topo">
+                    <div>
+                        <div class="kpi-label">${f.icone} ${f.nome}</div>
+                        <div class="kpi-valor">${fmt(total)}</div>
+                        <div class="fonte-sub">${lista.length} recebimento${lista.length === 1 ? '' : 's'}</div>
+                    </div>
+                    <button class="fonte-add" onclick="abrirFonte('${f.id}')" title="Lançar recebimento">${aberto ? '×' : '+'}</button>
+                </div>
+                ${aberto ? `
+                <div class="fonte-form">
+                    <input type="number" step="0.01" inputmode="decimal" id="entValor" placeholder="Valor recebido"/>
+                    <input type="date" id="entData" value="${selMes === mesAtual && selAno === anoAtual ? hojeISO : `${selAno}-${String(selMes).padStart(2, '0')}-01`}"/>
+                    <button class="btn-salvar" onclick="salvarEntrada()">Salvar</button>
+                </div>` : ''}
+                ${lista.length ? `
+                <div class="fonte-lista">
+                    ${lista.map(e => `
+                        <div class="fonte-item">
+                            <span>${e.data.split('-').reverse().slice(0, 2).join('/')}</span>
+                            <span>${fmt(e.valor)}</span>
+                            <button class="btn-mini" onclick="deletarEntrada(${e.id})" title="Apagar">✕</button>
+                        </div>`).join('')}
+                </div>` : ''}
+            </div>`
+    }).join('')
+
+    return `
+        ${seletorMes()}
+        <div class="saldo-card">
+            <div class="saldo-label">Sobra do mês</div>
+            <div class="saldo-valor ${r.sobra < 0 ? 'negativo' : ''}">${fmt(r.sobra)}</div>
+            <div class="saldo-meta">
+                <div class="saldo-meta-item"><span class="lbl">Entrou</span><span class="val verde">${fmt(r.entradas)}</span></div>
+                <div class="saldo-meta-item"><span class="lbl">Contas do mês</span><span class="val vermelho">${fmt(r.contas)}</span></div>
+                <div class="saldo-meta-item"><span class="lbl">Falta pagar</span><span class="val azul">${fmt(r.pendente)}</span></div>
+            </div>
+        </div>
+        <div class="fontes-grid">${cardsFontes}</div>
+    `
+}
+
+function paginaGastos() {
+    const r = resumoMes(mesAtual, anoAtual)
+    const ativos = gastosDoMes(mesAtual, anoAtual)
+        .map(g => ({ g, st: statusGasto(g) }))
+        .sort((a, b) => a.st.ordem - b.st.ordem || (a.g.dia_vencimento || 99) - (b.g.dia_vencimento || 99))
+
+    const g = editandoGasto !== null ? dados.gastos.find(x => x.id === editandoGasto) : null
+    const parcAtualEdit = g?.parcelas_total ? parcelaNoMes(g, mesAtual, anoAtual) : ''
+
+    const form = formGastoAberto ? `
+        <div class="card-form">
+            <div class="form-title">${g ? '✏️ Editar Gasto' : '+ Novo Gasto'}</div>
+            <div class="form-row">
+                <div class="field"><label>Descrição</label><input type="text" id="gastoDesc" placeholder="Ex: Aluguel" value="${esc(g?.descricao)}"/></div>
+                <div class="field"><label>Valor ${g?.parcelas_total ? 'da parcela' : ''} (R$)</label><input type="number" step="0.01" inputmode="decimal" id="gastoValor" placeholder="0,00" value="${g?.valor ?? ''}"/></div>
+            </div>
+            <div class="form-row">
+                <div class="field"><label>Tipo</label>
+                    <select id="gastoTipo">
+                        <option value="Fixo" ${g?.tipo === 'Fixo' ? 'selected' : ''}>Fixo</option>
+                        <option value="Variável" ${g?.tipo === 'Variável' ? 'selected' : ''}>Variável</option>
+                    </select>
+                </div>
+                <div class="field"><label>Dia do vencimento</label><input type="number" min="1" max="31" id="gastoDia" placeholder="Ex: 10" value="${g?.dia_vencimento ?? ''}"/></div>
+            </div>
+            <label class="check-linha">
+                <input type="checkbox" id="gastoParcelado" onchange="toggleParcelado()" ${g?.parcelas_total ? 'checked' : ''}/>
+                É parcelado (valor acima = valor da parcela)
+            </label>
+            <div class="form-row" id="camposParcela" style="display:${g?.parcelas_total ? 'grid' : 'none'}">
+                <div class="field"><label>Total de parcelas</label><input type="number" min="2" id="gastoParcTotal" placeholder="Ex: 10" value="${g?.parcelas_total ?? ''}"/></div>
+                <div class="field"><label>Parcela deste mês</label><input type="number" min="1" id="gastoParcAtual" placeholder="Ex: 3" value="${parcAtualEdit ?? ''}"/></div>
+            </div>
+            <button class="btn-salvar" onclick="salvarGasto()">${g ? '✔ Atualizar' : 'Salvar Gasto'}</button>
+        </div>` : ''
+
+    const blocos = ativos.length === 0
+        ? '<p class="vazio">Nenhum gasto ainda. Toque em "+ Novo gasto".</p>'
+        : ativos.map(({ g, st }) => {
+            const p = parcelaNoMes(g, mesAtual, anoAtual)
+            const pago = st.cls === 'pago'
+            return `
+            <div class="gasto-bloco ${st.cls}">
+                <div class="gb-topo">
+                    <span class="badge ${g.tipo === 'Fixo' ? 'badge-red' : 'badge-gold'}">${esc(g.tipo)}</span>
+                    ${p ? `<span class="badge badge-blue">${p}/${g.parcelas_total}</span>` : ''}
+                </div>
+                <div class="gb-nome">${esc(g.descricao)}</div>
+                <div class="gb-valor">${fmt(g.valor)}</div>
+                <div class="gb-status">${st.label}</div>
+                <div class="gb-acoes">
+                    <button class="gb-pagar" onclick="togglePagoGasto(${g.id})">${pago ? 'Desmarcar' : '✓ Paguei'}</button>
+                    <button class="btn-edit" onclick="editarGasto(${g.id})">✏️</button>
+                    <button class="btn-del" onclick="deletarGasto(${g.id})">✕</button>
+                </div>
+            </div>`
+        }).join('')
+
+    return `
+        <div class="section-title">💸 Contas de ${MESES[mesAtual - 1]}</div>
+        <div class="kpi-grid">
+            <div class="kpi-card" style="--cor:#f05070"><div class="kpi-label">📋 Total do mês</div><div class="kpi-valor">${fmt(r.contas)}</div></div>
+            <div class="kpi-card" style="--cor:#26d9a0"><div class="kpi-label">✅ Pago</div><div class="kpi-valor">${fmt(r.pago)}</div></div>
+            <div class="kpi-card" style="--cor:#4a9eff"><div class="kpi-label">⏳ Falta pagar</div><div class="kpi-valor">${fmt(r.pendente)}</div></div>
+            <div class="kpi-card" style="--cor:#e8a820"><div class="kpi-label">💰 Sobra prevista</div><div class="kpi-valor">${fmt(r.sobra)}</div></div>
+        </div>
+        <button class="btn-acao vermelho" style="width:100%;margin-bottom:16px" onclick="abrirFormGasto()">${formGastoAberto ? 'Fechar' : '+ Novo gasto'}</button>
+        ${form}
+        <div class="gastos-grid">${blocos}</div>
+    `
+}
+
+function paginaDashboard() {
+    const r = resumoMes(selMes, selAno)
+    const entMes = entradasDoMes(selMes, selAno)
+
+    const distrib = FONTES.map(f => {
+        const v = entMes.filter(e => e.fonte === f.id).reduce((s, e) => s + Number(e.valor), 0)
+        const pct = r.entradas > 0 ? (v / r.entradas * 100) : 0
+        return `
+            <div class="progress-row">
+                <div class="progress-meta">
+                    <span class="progress-label">${f.icone} ${f.nome}</span>
+                    <span class="progress-val" style="color:${f.cor}">${fmt(v)} (${pct.toFixed(1)}%)</span>
+                </div>
+                <div class="progress-track"><div class="progress-fill" style="width:${pct}%;background:${f.cor}"></div></div>
+            </div>`
+    }).join('')
+
+    // Últimos 6 meses até o mês selecionado
+    const k0 = chaveMes(selMes, selAno)
+    // Antes do primeiro recebimento lançado não há dado real: não projeta contas para trás
+    const primeira = dados.entradas.reduce((min, e) => {
+        const [a, m] = e.data.split('-').map(Number)
+        return Math.min(min, chaveMes(m, a))
+    }, Infinity)
+    const hist = Array.from({ length: 6 }, (_, i) => {
+        const k = k0 - (5 - i)
+        const m = (k % 12) + 1, a = Math.floor(k / 12)
+        const vazio = { entradas: 0, contas: 0 }
+        return { label: MESES_CURTOS[m - 1], ...(k < primeira ? vazio : resumoMes(m, a)) }
+    })
+    const max = Math.max(...hist.map(h => Math.max(h.entradas, h.contas)), 1)
+
+    return `
+        ${seletorMes()}
+        <div class="saldo-card" style="margin-bottom:20px">
+            <div class="saldo-label">Sobra de ${MESES[selMes - 1]}</div>
+            <div class="saldo-valor ${r.sobra < 0 ? 'negativo' : ''}">${fmt(r.sobra)}</div>
+            <div class="saldo-meta">
+                <div class="saldo-meta-item"><span class="lbl">Entrou</span><span class="val verde">${fmt(r.entradas)}</span></div>
+                <div class="saldo-meta-item"><span class="lbl">Contas</span><span class="val vermelho">${fmt(r.contas)}</span></div>
+                <div class="saldo-meta-item"><span class="lbl">% que sobrou</span><span class="val azul">${r.entradas > 0 ? (r.sobra / r.entradas * 100).toFixed(1) + '%' : '—'}</span></div>
+            </div>
+        </div>
+        <div class="chart-wrap">
+            <div class="chart-title">Últimos 6 meses</div>
+            <div class="bar-chart">
+                ${hist.map(h => `
+                <div class="bar-col" title="Entrou ${fmt(h.entradas)} · Contas ${fmt(h.contas)}">
+                    <div style="display:flex;gap:3px;align-items:flex-end;height:120px">
+                        <div style="width:16px;background:#26d9a0;border-radius:4px 4px 0 0;height:${h.entradas / max * 100}%;min-height:${h.entradas ? 4 : 0}px"></div>
+                        <div style="width:16px;background:#f05070;border-radius:4px 4px 0 0;height:${h.contas / max * 100}%;min-height:${h.contas ? 4 : 0}px"></div>
+                    </div>
+                    <div class="bar-label">${h.label}</div>
+                </div>`).join('')}
+            </div>
+            <div style="display:flex;gap:16px;margin-top:12px">
+                <div style="display:flex;align-items:center;gap:6px"><div style="width:12px;height:12px;border-radius:3px;background:#26d9a0"></div><span style="font-size:11px;color:#5a7090">Entrou</span></div>
+                <div style="display:flex;align-items:center;gap:6px"><div style="width:12px;height:12px;border-radius:3px;background:#f05070"></div><span style="font-size:11px;color:#5a7090">Contas</span></div>
+            </div>
+        </div>
+        <div class="chart-wrap">
+            <div class="chart-title">De onde veio o dinheiro em ${MESES[selMes - 1]}</div>
+            ${distrib}
+        </div>
+    `
+}
 
 // ── LOGOUT ──
-window.logout = async function() {
+async function logout() {
     if (confirm('Deseja sair da sua conta?')) {
         await supabase.auth.signOut()
         window.location.href = 'login.html'
     }
 }
 
-// ── CARREGAR DADOS ──
-async function carregarDados() {
-    const [perfil, gastos, freelances, uber, objetivos] = await Promise.all([
-        supabase.from('profiles').select('*').eq('id', userId).maybeSingle(),
-        supabase.from('gastos').select('*').eq('user_id', userId),
-        supabase.from('freelances').select('*').eq('user_id', userId),
-        supabase.from('uber').select('*').eq('user_id', userId),
-        supabase.from('objetivos').select('*').eq('user_id', userId),
-    ])
-    if (perfil.data) dados.salario = perfil.data.salario || 0
-    if (gastos.data) dados.gastos = gastos.data
-    if (freelances.data) dados.freelances = freelances.data
-    if (uber.data) dados.uber = uber.data
-    if (objetivos.data) dados.objetivos = objetivos.data
-    renderAba(abaAtiva)
-}
-
-carregarDados()
-
-// ── SALÁRIO ──
-async function salvarSalario() {
-    const valor = parseFloat(document.getElementById('inputSalario').value || 0);
-    dados.salario = valor;
-    await supabase.from('profiles').upsert({ id: userId, salario: valor });
-    await carregarDados();
-}
-
-// ── GASTOS ──
-async function salvarGasto() {
-    const desc = document.getElementById('gastoDesc').value;
-    const valor = parseFloat(document.getElementById('gastoValor').value);
-    const tipo = document.getElementById('gastoTipo').value;
-    if (!desc || !valor) return alert('Preencha descrição e valor!');
-    if (editandoGasto !== null) {
-        const id = dados.gastos[editandoGasto].id;
-        await supabase.from('gastos').update({ descricao: desc, valor, tipo }).eq('id', id);
-        editandoGasto = null;
-    } else {
-        await supabase.from('gastos').insert({ user_id: userId, descricao: desc, valor, tipo });
-    }
-    await carregarDados();
-}
-
-async function deletarGasto(i) {
-    if (confirm('Deletar este gasto?')) {
-        await supabase.from('gastos').delete().eq('id', dados.gastos[i].id);
-        await carregarDados();
-    }
-}
-
-function editarGasto(i) {
-    const g = dados.gastos[i];
-    document.getElementById('gastoDesc').value = g.descricao;
-    document.getElementById('gastoValor').value = g.valor;
-    document.getElementById('gastoTipo').value = g.tipo;
-    document.getElementById('btnSalvarGasto').textContent = '✔ Atualizar Gasto';
-    editandoGasto = i;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-
-async function togglePagoGasto(i) {
-    const g = dados.gastos[i];
-    const jaPago = g.pago_mes === mesAtual && g.pago_ano === anoAtual;
-    await supabase.from('gastos').update({
-        pago_mes: jaPago ? null : mesAtual,
-        pago_ano: jaPago ? null : anoAtual
-    }).eq('id', g.id);
-    await carregarDados();
-}
-
-// ── FREELANCE ──
-async function salvarFreelance() {
-    const servico = document.getElementById('freeServico').value;
-    const valor = parseFloat(document.getElementById('freeValor').value);
-    const plataforma = document.getElementById('freePlataforma').value === 'outro'
-        ? document.getElementById('freeOutraPlataforma').value
-        : document.getElementById('freePlataforma').value;
-    const status = document.getElementById('freeStatus').value;
-    if (!servico || !valor) return alert('Preencha serviço e valor!');
-    if (editandoFreelance !== null) {
-        await supabase.from('freelances').update({ servico, valor, plataforma, status }).eq('id', dados.freelances[editandoFreelance].id);
-        editandoFreelance = null;
-    } else {
-        await supabase.from('freelances').insert({ user_id: userId, servico, valor, plataforma, status });
-    }
-    await carregarDados();
-}
-
-function editarFreelance(i) {
-    const f = dados.freelances[i];
-    document.getElementById('freeServico').value = f.servico;
-    document.getElementById('freeValor').value = f.valor;
-    document.getElementById('freeStatus').value = f.status;
-    const select = document.getElementById('freePlataforma');
-    const opcoes = ['99Freelas', 'Workana', 'Fiverr'];
-    if (opcoes.includes(f.plataforma)) {
-        select.value = f.plataforma;
-    } else {
-        select.value = 'outro';
-        document.getElementById('freeOutraPlataforma').style.display = 'block';
-        document.getElementById('freeOutraPlataforma').value = f.plataforma;
-    }
-    document.getElementById('btnSalvarFreelance').textContent = '✔ Atualizar Serviço';
-    editandoFreelance = i;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-
-async function deletarFreelance(i) {
-    if (confirm('Deletar este serviço?')) {
-        await supabase.from('freelances').delete().eq('id', dados.freelances[i].id);
-        await carregarDados();
-    }
-}
-
-function filtrarFreelance(filtro, btn) {
-    document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    let lista = dados.freelances;
-    if (filtro !== 'all') lista = dados.freelances.filter(f => f.plataforma === filtro || f.status === filtro);
-    document.getElementById('tabelaFreelance').innerHTML = tabelaFreelance(lista);
-}
-
-function toggleOutraPlataforma() {
-    const select = document.getElementById('freePlataforma');
-    document.getElementById('freeOutraPlataforma').style.display = select.value === 'outro' ? 'block' : 'none';
-}
-
-// ── UBER ──
-function uberDiasFiltrados() {
-    const mes = dados.uberMes !== undefined ? dados.uberMes : new Date().getMonth();
-    const ano = dados.uberAno !== undefined ? dados.uberAno : new Date().getFullYear();
-    return dados.uber.filter(d => {
-        const dt = new Date(d.data + 'T12:00:00');
-        return dt.getMonth() === mes && dt.getFullYear() === ano;
-    });
-}
-
-function mudarMesUber(val) { dados.uberMes = parseInt(val); renderAba('uber'); }
-function mudarAnoUber(val) { dados.uberAno = parseInt(val); renderAba('uber'); }
-
-async function salvarUber() {
-    const data = document.getElementById('uberData').value;
-    const corridas = parseFloat(document.getElementById('uberCorridas').value || 0);
-    const combustivel = parseFloat(document.getElementById('uberCombust').value || 0);
-    const manutencao = parseFloat(document.getElementById('uberManut').value || 0);
-    if (!data || !corridas) return alert('Preencha a data e o valor das corridas!');
-    if (editandoUber !== null) {
-        await supabase.from('uber').update({ data, corridas, combustivel, manutencao }).eq('id', dados.uber[editandoUber].id);
-        editandoUber = null;
-    } else {
-        await supabase.from('uber').insert({ user_id: userId, data, corridas, combustivel, manutencao });
-    }
-    await carregarDados();
-}
-
-async function deletarUber(i) {
-    const diasMes = uberDiasFiltrados();
-    const item = diasMes[diasMes.length - 1 - i];
-    if (confirm('Deletar este dia?')) {
-        await supabase.from('uber').delete().eq('id', item.id);
-        await carregarDados();
-    }
-}
-
-function editarUber(i) {
-    const u = dados.uber[i];
-    document.getElementById('uberData').value = u.data;
-    document.getElementById('uberCorridas').value = u.corridas;
-    document.getElementById('uberCombust').value = u.combustivel || 0;
-    document.getElementById('uberManut').value = u.manutencao || 0;
-    document.getElementById('btnSalvarUber').textContent = '✔ Atualizar Dia';
-    editandoUber = i;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-
-// ── OBJETIVOS ──
-function calcularParcela() {
-    const valor = parseFloat(document.getElementById('objValor').value || 0);
-    const parcelas = parseInt(document.getElementById('objParcelas').value);
-    document.getElementById('objParcela').textContent = fmt(valor / parcelas);
-}
-
-async function salvarObjetivo() {
-    const nome = document.getElementById('objNome').value;
-    const valor = parseFloat(document.getElementById('objValor').value);
-    const parcelas = parseInt(document.getElementById('objParcelas').value);
-    if (!nome || !valor) return alert('Preencha o objetivo e o valor!');
-    if (editandoObjetivo !== null) {
-        await supabase.from('objetivos').update({ nome, valor, parcelas }).eq('id', dados.objetivos[editandoObjetivo].id);
-        editandoObjetivo = null;
-    } else {
-        await supabase.from('objetivos').insert({ user_id: userId, nome, valor, parcelas, valor_pago: 0 });
-    }
-    await carregarDados();
-}
-
-async function deletarObjetivo(i) {
-    if (confirm('Deletar este objetivo?')) {
-        await supabase.from('objetivos').delete().eq('id', dados.objetivos[i].id);
-        await carregarDados();
-    }
-}
-
-function editarObjetivo(i) {
-    const o = dados.objetivos[i];
-    document.getElementById('objNome').value = o.nome;
-    document.getElementById('objValor').value = o.valor;
-    document.getElementById('objParcelas').value = o.parcelas;
-    calcularParcela();
-    document.getElementById('btnSalvarObjetivo').textContent = '✔ Atualizar Objetivo';
-    editandoObjetivo = i;
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-
-function abrirPagamento(i) {
-    const o = dados.objetivos[i];
-    const jaPago = o.check_mes === mesAtual && o.check_ano === anoAtual;
-
-    if (jaPago) {
-        if (confirm('Desmarcar pagamento deste mês? O valor será estornado.')) {
-            estornarPagamento(i);
-        } else {
-            // Remarca o checkbox visualmente
-            carregarDados();
-        }
-        return;
-    }
-
-    const valorParcela = (o.valor / o.parcelas).toFixed(2);
-    const valorDigitado = prompt(`Quanto você pagou este mês?\n(Parcela sugerida: ${fmt(parseFloat(valorParcela))})`, valorParcela);
-    if (valorDigitado === null) { carregarDados(); return; }
-    const valor = parseFloat(String(valorDigitado).replace(',', '.'));
-    if (isNaN(valor) || valor <= 0) { alert('Valor inválido!'); carregarDados(); return; }
-    registrarPagamento(i, valor);
-}
-
-async function registrarPagamento(i, valor) {
-    const o = dados.objetivos[i];
-    const novoValorPago = Math.min(o.valor, (o.valor_pago || 0) + valor);
-    await supabase.from('objetivos').update({
-        valor_pago: novoValorPago,
-        check_mes: mesAtual,
-        check_ano: anoAtual
-    }).eq('id', o.id);
-    await carregarDados();
-}
-
-async function estornarPagamento(i) {
-    const o = dados.objetivos[i];
-    const valorParcela = o.valor / o.parcelas;
-    const novoValorPago = Math.max(0, (o.valor_pago || 0) - valorParcela);
-    await supabase.from('objetivos').update({
-        valor_pago: novoValorPago,
-        check_mes: null,
-        check_ano: null
-    }).eq('id', o.id);
-    await carregarDados();
-}
-
-// ── NAVEGAÇÃO ──
-document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', function() {
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        this.classList.add('active');
-        abaAtiva = this.dataset.tab;
-        renderAba(abaAtiva);
-    });
-});
-
-function renderAba(aba) {
-    const conteudo = document.getElementById('conteudo');
-    if (aba === 'home')      conteudo.innerHTML = paginaHome();
-    if (aba === 'gastos')    conteudo.innerHTML = paginaGastos();
-    if (aba === 'freelance') conteudo.innerHTML = paginaFreelance();
-    if (aba === 'uber')      conteudo.innerHTML = paginaUber();
-    if (aba === 'dashboard') conteudo.innerHTML = paginaDashboard();
-    if (aba === 'objetivos') conteudo.innerHTML = paginaObjetivos();
-    if (aba === 'finbot')    conteudo.innerHTML = paginaFinbot();
-}
-
-renderAba('home');
-
-// ── PÁGINAS ──
-function paginaHome() {
-    const totalEntradas = dados.salario +
-        dados.freelances.reduce((s, f) => s + f.valor, 0) +
-        dados.uber.reduce((s, u) => s + u.corridas, 0);
-    const totalGastos = dados.gastos.reduce((s, g) => s + g.valor, 0) +
-        dados.uber.reduce((s, u) => s + (u.combustivel || 0) + (u.manutencao || 0), 0);
-    const saldo = totalEntradas - totalGastos;
-
-    return `
-        <div class="saldo-card">
-            <div class="saldo-label">Saldo Disponível</div>
-            <div class="saldo-valor ${saldo < 0 ? 'negativo' : ''}">${fmt(saldo)}</div>
-            <div class="saldo-meta">
-                <div class="saldo-meta-item"><span class="lbl">Entradas</span><span class="val verde">${fmt(totalEntradas)}</span></div>
-                <div class="saldo-meta-item"><span class="lbl">Gastos</span><span class="val vermelho">${fmt(totalGastos)}</span></div>
-                <div class="saldo-meta-item"><span class="lbl">% Economizado</span><span class="val azul">${totalEntradas > 0 ? ((saldo/totalEntradas)*100).toFixed(1)+'%' : '0%'}</span></div>
-            </div>
-        </div>
-        <div class="kpi-grid">
-            <div class="kpi-card" style="--cor:#26d9a0">
-                <div class="kpi-icone">💼</div>
-                <div class="kpi-label">Salário</div>
-                <div class="kpi-valor">${fmt(dados.salario)}</div>
-                <div style="margin-top:10px;display:flex;gap:8px">
-                    <input type="number" id="inputSalario" value="${dados.salario}" style="background:#111827;border:1px solid #1e2d45;border-radius:10px;padding:10px;color:#f0ece4;font-size:14px;flex:1"/>
-                    <button onclick="salvarSalario()" style="background:#e8a820;border:none;border-radius:10px;padding:10px 16px;font-weight:700;cursor:pointer">💾</button>
-                </div>
-            </div>
-            <div class="kpi-card" style="--cor:#4a9eff">
-                <div class="kpi-icone">💻</div><div class="kpi-label">Freelance</div>
-                <div class="kpi-valor">${fmt(dados.freelances.reduce((s,f)=>s+f.valor,0))}</div>
-            </div>
-            <div class="kpi-card" style="--cor:#9b7fe8">
-                <div class="kpi-icone">🚗</div><div class="kpi-label">Uber Bruto</div>
-                <div class="kpi-valor">${fmt(dados.uber.reduce((s,u)=>s+u.corridas,0))}</div>
-            </div>
-            <div class="kpi-card" style="--cor:#f05070">
-                <div class="kpi-icone">💸</div><div class="kpi-label">Total Gastos</div>
-                <div class="kpi-valor">${fmt(totalGastos)}</div>
-            </div>
-        </div>
-        <div class="acoes-rapidas">
-            <button class="btn-acao vermelho" onclick="document.querySelector('[data-tab=gastos]').click()">+ Gasto</button>
-            <button class="btn-acao azul" onclick="document.querySelector('[data-tab=freelance]').click()">+ Freelance</button>
-            <button class="btn-acao roxo" onclick="document.querySelector('[data-tab=uber]').click()">+ Uber</button>
-        </div>
-    `;
-}
-
-function paginaGastos() {
-    const totalFixo = dados.gastos.filter(g=>g.tipo==='Fixo').reduce((s,g)=>s+g.valor,0);
-    const totalVariavel = dados.gastos.filter(g=>g.tipo==='Variável').reduce((s,g)=>s+g.valor,0);
-    const totalPago = dados.gastos.filter(g=>g.pago_mes===mesAtual&&g.pago_ano===anoAtual).reduce((s,g)=>s+g.valor,0);
-    const totalPendente = (totalFixo+totalVariavel) - totalPago;
-
-    return `
-        <div class="section-title">💸 Controle de Gastos</div>
-        <div class="kpi-grid" style="grid-template-columns:repeat(4,1fr)">
-            <div class="kpi-card" style="--cor:#f05070"><div class="kpi-label">📋 Fixos</div><div class="kpi-valor">${fmt(totalFixo)}</div></div>
-            <div class="kpi-card" style="--cor:#e8a820"><div class="kpi-label">💥 Variáveis</div><div class="kpi-valor">${fmt(totalVariavel)}</div></div>
-            <div class="kpi-card" style="--cor:#26d9a0"><div class="kpi-label">✅ Pago este mês</div><div class="kpi-valor">${fmt(totalPago)}</div></div>
-            <div class="kpi-card" style="--cor:#4a9eff"><div class="kpi-label">⏳ Pendente</div><div class="kpi-valor">${fmt(totalPendente)}</div></div>
-        </div>
-        <div class="card-form">
-            <div class="form-title">+ Novo Gasto</div>
-            <div class="form-row">
-                <div class="field"><label>Descrição</label><input type="text" id="gastoDesc" placeholder="Ex: Aluguel..."/></div>
-                <div class="field"><label>Valor (R$)</label><input type="number" id="gastoValor" placeholder="0,00"/></div>
-                <div class="field"><label>Tipo</label>
-                    <select id="gastoTipo"><option value="Fixo">Fixo</option><option value="Variável">Variável</option></select>
-                </div>
-            </div>
-            <button class="btn-salvar" id="btnSalvarGasto" onclick="salvarGasto()">Salvar Gasto</button>
-        </div>
-        <div class="tabela-wrap">
-            <table class="tabela">
-                <thead><tr><th>Descrição</th><th>Valor</th><th>Tipo</th><th>Pago este mês</th><th></th></tr></thead>
-                <tbody>
-                    ${dados.gastos.length === 0
-                        ? '<tr><td colspan="5" style="text-align:center;color:#5a7090;padding:24px">Nenhum gasto ainda</td></tr>'
-                        : [...dados.gastos].reverse().map((g, i) => {
-                            const idx = dados.gastos.length - 1 - i;
-                            const pago = g.pago_mes === mesAtual && g.pago_ano === anoAtual;
-                            return `
-                            <tr style="${pago ? 'opacity:0.55' : ''}">
-                                <td style="${pago ? 'text-decoration:line-through;color:#5a7090' : ''}">${g.descricao}</td>
-                                <td style="color:#f05070;font-weight:700">${fmt(g.valor)}</td>
-                                <td><span class="badge ${g.tipo==='Fixo'?'badge-red':'badge-gold'}">${g.tipo}</span></td>
-                                <td>
-                                    <input type="checkbox" ${pago?'checked':''} onchange="togglePagoGasto(${idx})"
-                                        style="width:18px;height:18px;cursor:pointer;accent-color:#26d9a0"/>
-                                </td>
-                                <td>
-                                    <button class="btn-edit" onclick="editarGasto(${idx})">✏️</button>
-                                    <button class="btn-del" onclick="deletarGasto(${idx})">✕</button>
-                                </td>
-                            </tr>`;
-                        }).join('')}
-                </tbody>
-            </table>
-        </div>
-    `;
-}
-
-function paginaFreelance() {
-    const total99 = dados.freelances.filter(f=>f.plataforma==='99Freelas').reduce((s,f)=>s+f.valor,0);
-    const totalWorkana = dados.freelances.filter(f=>f.plataforma==='Workana').reduce((s,f)=>s+f.valor,0);
-    const totalFiverr = dados.freelances.filter(f=>f.plataforma==='Fiverr').reduce((s,f)=>s+f.valor,0);
-
-    return `
-        <div class="section-title">💻 Controle Freelance</div>
-        <div class="kpi-grid">
-            <div class="kpi-card" style="--cor:#4a9eff"><div class="kpi-label">99Freelas</div><div class="kpi-valor">${fmt(total99)}</div><div class="kpi-sub">${dados.freelances.filter(f=>f.plataforma==='99Freelas').length} projetos</div></div>
-            <div class="kpi-card" style="--cor:#9b7fe8"><div class="kpi-label">Workana</div><div class="kpi-valor">${fmt(totalWorkana)}</div><div class="kpi-sub">${dados.freelances.filter(f=>f.plataforma==='Workana').length} projetos</div></div>
-            <div class="kpi-card" style="--cor:#26d9a0"><div class="kpi-label">Fiverr</div><div class="kpi-valor">${fmt(totalFiverr)}</div><div class="kpi-sub">${dados.freelances.filter(f=>f.plataforma==='Fiverr').length} projetos</div></div>
-            <div class="kpi-card" style="--cor:#e8a820"><div class="kpi-label">💰 Total</div><div class="kpi-valor">${fmt(total99+totalWorkana+totalFiverr)}</div><div class="kpi-sub">${dados.freelances.length} projetos</div></div>
-        </div>
-        <div class="filter-bar">
-            <button class="filter-chip active" onclick="filtrarFreelance('all',this)">Todas</button>
-            <button class="filter-chip" onclick="filtrarFreelance('99Freelas',this)">99Freelas</button>
-            <button class="filter-chip" onclick="filtrarFreelance('Workana',this)">Workana</button>
-            <button class="filter-chip" onclick="filtrarFreelance('Fiverr',this)">Fiverr</button>
-            <button class="filter-chip" onclick="filtrarFreelance('pago',this)">✅ Pago</button>
-            <button class="filter-chip" onclick="filtrarFreelance('aguardando',this)">⏳ Aguardando</button>
-        </div>
-        <div class="card-form">
-            <div class="form-title">+ Novo Serviço</div>
-            <div class="form-row">
-                <div class="field"><label>Serviço</label><input type="text" id="freeServico" placeholder="Ex: Bot WhatsApp..."/></div>
-                <div class="field"><label>Valor (R$)</label><input type="number" id="freeValor" placeholder="0,00"/></div>
-            </div>
-            <div class="form-row">
-                <div class="field">
-                    <label>Plataforma</label>
-                    <select id="freePlataforma" onchange="toggleOutraPlataforma()">
-                        <option value="99Freelas">99Freelas</option>
-                        <option value="Workana">Workana</option>
-                        <option value="Fiverr">Fiverr</option>
-                        <option value="outro">➕ Outra plataforma</option>
-                    </select>
-                    <input type="text" id="freeOutraPlataforma" placeholder="Digite o nome..." style="display:none;margin-top:8px"/>
-                </div>
-                <div class="field">
-                    <label>Status</label>
-                    <select id="freeStatus">
-                        <option value="aguardando">⏳ Aguardando</option>
-                        <option value="pago">✅ Pago</option>
-                        <option value="cancelado">❌ Cancelado</option>
-                    </select>
-                </div>
-            </div>
-            <button class="btn-salvar" id="btnSalvarFreelance" onclick="salvarFreelance()">Salvar Serviço</button>
-        </div>
-        <div class="tabela-wrap" id="tabelaFreelance">${tabelaFreelance(dados.freelances)}</div>
-    `;
-}
-
-function tabelaFreelance(lista) {
-    if (lista.length === 0) return '<p style="text-align:center;color:#5a7090;padding:24px">Nenhum serviço ainda</p>';
-    return `
-        <table class="tabela">
-            <thead><tr><th>Serviço</th><th>Valor</th><th>Plataforma</th><th>Status</th><th></th></tr></thead>
-            <tbody>
-                ${[...lista].reverse().map((f, i) => `
-                <tr>
-                    <td>${f.servico}</td>
-                    <td style="color:#26d9a0;font-weight:700">${fmt(f.valor)}</td>
-                    <td><span class="badge badge-blue">${f.plataforma}</span></td>
-                    <td><span class="badge ${f.status==='pago'?'badge-green':f.status==='cancelado'?'badge-red':'badge-gold'}">${f.status==='pago'?'✅ Pago':f.status==='cancelado'?'❌ Cancelado':'⏳ Aguardando'}</span></td>
-                    <td>
-                        <button class="btn-edit" onclick="editarFreelance(${dados.freelances.length-1-i})">✏️</button>
-                        <button class="btn-del" onclick="deletarFreelance(${dados.freelances.length-1-i})">✕</button>
-                    </td>
-                </tr>`).join('')}
-            </tbody>
-        </table>`;
-}
-
-function paginaUber() {
-    const MESES = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho','Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
-    const diasMes = uberDiasFiltrados();
-    const totalCorridas = diasMes.reduce((s,d)=>s+(d.corridas||0),0);
-    const totalCombust = diasMes.reduce((s,d)=>s+(d.combustivel||0),0);
-    const totalManut = diasMes.reduce((s,d)=>s+(d.manutencao||0),0);
-    const mesSel = dados.uberMes !== undefined ? dados.uberMes : new Date().getMonth();
-    const anoSel = dados.uberAno !== undefined ? dados.uberAno : new Date().getFullYear();
-
-    return `
-        <div class="section-title">🚗 Controle Uber</div>
-        <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:16px">
-            <select class="month-select" onchange="mudarMesUber(this.value)">
-                ${MESES.map((m,i)=>`<option value="${i}" ${i==mesSel?'selected':''}>${m}</option>`).join('')}
-            </select>
-            <select class="month-select" onchange="mudarAnoUber(this.value)">
-                ${[2024,2025,2026].map(a=>`<option value="${a}" ${a==anoSel?'selected':''}>${a}</option>`).join('')}
-            </select>
-        </div>
-        <div class="kpi-grid">
-            <div class="kpi-card" style="--cor:#9b7fe8"><div class="kpi-label">🚗 Corridas</div><div class="kpi-valor">${fmt(totalCorridas)}</div></div>
-            <div class="kpi-card" style="--cor:#f05070"><div class="kpi-label">⛽ Combustível</div><div class="kpi-valor">${fmt(totalCombust)}</div></div>
-            <div class="kpi-card" style="--cor:#4a9eff"><div class="kpi-label">🔧 Manutenção</div><div class="kpi-valor">${fmt(totalManut)}</div></div>
-            <div class="kpi-card" style="--cor:#e8a820"><div class="kpi-label">💰 Líquido</div><div class="kpi-valor">${fmt(totalCorridas-totalCombust-totalManut)}</div></div>
-        </div>
-        <div class="card-form">
-            <div class="form-title">+ Registrar Dia</div>
-            <div class="form-row">
-                <div class="field"><label>Data</label><input type="date" id="uberData"/></div>
-                <div class="field"><label>Corridas (R$)</label><input type="number" id="uberCorridas" placeholder="0,00"/></div>
-            </div>
-            <div class="form-row">
-                <div class="field"><label>⛽ Combustível (R$)</label><input type="number" id="uberCombust" placeholder="0,00"/></div>
-                <div class="field"><label>🔧 Manutenção (R$)</label><input type="number" id="uberManut" placeholder="0,00"/></div>
-            </div>
-            <button class="btn-salvar" id="btnSalvarUber" onclick="salvarUber()">Salvar Dia</button>
-        </div>
-        <div class="tabela-wrap">
-            <table class="tabela">
-                <thead><tr><th>Data</th><th>Corridas</th><th>Combustível</th><th>Manutenção</th><th>Líquido</th><th></th></tr></thead>
-                <tbody>
-                    ${diasMes.length === 0
-                        ? '<tr><td colspan="6" style="text-align:center;color:#5a7090;padding:24px">Nenhum dia registrado</td></tr>'
-                        : [...diasMes].reverse().map((d,i) => `
-                        <tr>
-                            <td>${d.data}</td>
-                            <td style="color:#9b7fe8;font-weight:700">${fmt(d.corridas)}</td>
-                            <td style="color:#f05070">${fmt(d.combustivel||0)}</td>
-                            <td style="color:#4a9eff">${fmt(d.manutencao||0)}</td>
-                            <td style="color:#e8a820;font-weight:700">${fmt((d.corridas||0)-(d.combustivel||0)-(d.manutencao||0))}</td>
-                            <td>
-                                <button class="btn-edit" onclick="editarUber(${dados.uber.indexOf(diasMes[diasMes.length-1-i])})">✏️</button>
-                                <button class="btn-del" onclick="deletarUber(${i})">✕</button>
-                            </td>
-                        </tr>`).join('')}
-                </tbody>
-            </table>
-        </div>
-    `;
-}
-
-function paginaDashboard() {
-    const totalEntradas = dados.salario + dados.freelances.reduce((s,f)=>s+f.valor,0) + dados.uber.reduce((s,u)=>s+u.corridas,0);
-    const totalGastos = dados.gastos.reduce((s,g)=>s+g.valor,0) + dados.uber.reduce((s,u)=>s+(u.combustivel||0)+(u.manutencao||0),0);
-    const saldo = totalEntradas - totalGastos;
-    const totalFreelance = dados.freelances.reduce((s,f)=>s+f.valor,0);
-    const totalUberLiq = dados.uber.reduce((s,u)=>s+(u.corridas||0)-(u.combustivel||0)-(u.manutencao||0),0);
-    const last7 = Array.from({length:7},(_,i)=>{
-        const d = new Date(); d.setDate(d.getDate()-(6-i));
-        const ds = d.toISOString().split('T')[0];
-        const ent = dados.freelances.filter(f=>f.data===ds).reduce((s,f)=>s+f.valor,0) + (dados.uber.find(u=>u.data===ds)?.corridas||0);
-        const gas = dados.gastos.filter(g=>g.data===ds).reduce((s,g)=>s+g.valor,0);
-        const dias=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
-        return {dia:dias[d.getDay()],ent,gas};
-    });
-    const maxBar = Math.max(...last7.map(d=>Math.max(d.ent,d.gas)),1);
-
-    return `
-        <div class="section-title">📈 Dashboard Financeiro</div>
-        <div class="saldo-card" style="margin-bottom:20px">
-            <div class="saldo-label">Saldo Disponível</div>
-            <div class="saldo-valor ${saldo<0?'negativo':''}">${fmt(saldo)}</div>
-            <div class="saldo-meta">
-                <div class="saldo-meta-item"><span class="lbl">Entradas</span><span class="val verde">${fmt(totalEntradas)}</span></div>
-                <div class="saldo-meta-item"><span class="lbl">Gastos</span><span class="val vermelho">${fmt(totalGastos)}</span></div>
-                <div class="saldo-meta-item"><span class="lbl">Freelance</span><span class="val azul">${fmt(totalFreelance)}</span></div>
-                <div class="saldo-meta-item"><span class="lbl">Uber Líquido</span><span class="val" style="color:#9b7fe8">${fmt(totalUberLiq)}</span></div>
-            </div>
-        </div>
-        <div class="chart-wrap">
-            <div class="chart-title">Últimos 7 Dias</div>
-            <div class="bar-chart">
-                ${last7.map(d=>`
-                <div class="bar-col">
-                    <div style="display:flex;gap:3px;align-items:flex-end;height:100px">
-                        <div style="width:14px;background:#26d9a0;border-radius:4px 4px 0 0;height:${d.ent/maxBar*100}%;min-height:${d.ent?4:0}px"></div>
-                        <div style="width:14px;background:#f05070;border-radius:4px 4px 0 0;height:${d.gas/maxBar*100}%;min-height:${d.gas?4:0}px"></div>
-                    </div>
-                    <div class="bar-label">${d.dia}</div>
-                </div>`).join('')}
-            </div>
-            <div style="display:flex;gap:16px;margin-top:12px">
-                <div style="display:flex;align-items:center;gap:6px"><div style="width:12px;height:12px;border-radius:3px;background:#26d9a0"></div><span style="font-size:11px;color:#5a7090">Entradas</span></div>
-                <div style="display:flex;align-items:center;gap:6px"><div style="width:12px;height:12px;border-radius:3px;background:#f05070"></div><span style="font-size:11px;color:#5a7090">Gastos</span></div>
-            </div>
-        </div>
-        <div class="chart-wrap">
-            <div class="chart-title">Distribuição de Renda</div>
-            ${[
-                {label:'💼 Salário',value:dados.salario,color:'#26d9a0'},
-                {label:'💻 Freelance',value:totalFreelance,color:'#4a9eff'},
-                {label:'🚗 Uber',value:dados.uber.reduce((s,u)=>s+u.corridas,0),color:'#9b7fe8'},
-            ].map(r=>{
-                const pct = totalEntradas>0?(r.value/totalEntradas*100).toFixed(1):0;
-                return `
-                <div class="progress-row">
-                    <div class="progress-meta">
-                        <span class="progress-label">${r.label}</span>
-                        <span class="progress-val" style="color:${r.color}">${fmt(r.value)} (${pct}%)</span>
-                    </div>
-                    <div class="progress-track"><div class="progress-fill" style="width:${pct}%;background:${r.color}"></div></div>
-                </div>`;
-            }).join('')}
-        </div>
-    `;
-}
-
-function paginaObjetivos() {
-    return `
-        <div class="section-title">🎯 Objetivos</div>
-        <div class="card-form">
-            <div class="form-title">+ Novo Objetivo</div>
-            <div class="form-row">
-                <div class="field"><label>Objetivo</label><input type="text" id="objNome" placeholder="Ex: Monitor Samsung..."/></div>
-                <div class="field"><label>Valor Total (R$)</label><input type="number" id="objValor" placeholder="0,00" oninput="calcularParcela()"/></div>
-            </div>
-            <div class="form-row">
-                <div class="field">
-                    <label>Parcelamento</label>
-                    <select id="objParcelas" onchange="calcularParcela()">
-                        ${[1,2,3,4,5,6,7,8,9,10,11,12,18].map(n=>`<option value="${n}">${n===1?'À vista':n+'x'}</option>`).join('')}
-                    </select>
-                </div>
-                <div class="field">
-                    <label>Valor da Parcela</label>
-                    <div id="objParcela" style="padding:12px 14px;background:#111827;border:1px solid #1e2d45;border-radius:10px;color:#e8a820;font-weight:700;font-size:14px">R$ 0,00</div>
-                </div>
-            </div>
-            <button class="btn-salvar" id="btnSalvarObjetivo" onclick="salvarObjetivo()">Salvar Objetivo</button>
-        </div>
-        <div class="tabela-wrap">
-            ${dados.objetivos.length === 0
-                ? '<p style="text-align:center;color:#5a7090;padding:24px">Nenhum objetivo ainda</p>'
-                : `<table class="tabela">
-                <thead>
-                    <tr>
-                        <th>Objetivo</th>
-                        <th>Total</th>
-                        <th>Parcelas</th>
-                        <th>Parcela/Mês</th>
-                        <th>Pago</th>
-                        <th>Restante</th>
-                        <th>✅ Mês</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${[...dados.objetivos].reverse().map((o,i)=>{
-                        const idx = dados.objetivos.length-1-i;
-                        const pago = o.check_mes===mesAtual && o.check_ano===anoAtual;
-                        const restante = Math.max(0, o.valor-(o.valor_pago||0));
-                        const concluido = restante === 0;
-                        return `
-                        <tr style="${concluido?'opacity:0.5':''}">
-                            <td>${concluido?'✅ ':''} ${o.nome}</td>
-                            <td style="color:#e8a820;font-weight:700">${fmt(o.valor)}</td>
-                            <td><span class="badge badge-blue">${o.parcelas===1?'À vista':o.parcelas+'x'}</span></td>
-                            <td style="color:#26d9a0;font-weight:700">${fmt(o.valor/o.parcelas)}</td>
-                            <td style="color:#4a9eff;font-weight:700">${fmt(o.valor_pago||0)}</td>
-                            <td style="color:${restante>0?'#f05070':'#26d9a0'};font-weight:700">${fmt(restante)}</td>
-                            <td>
-                                <input type="checkbox"
-                                    ${pago?'checked':''}
-                                    ${concluido?'disabled':''}
-                                    onchange="abrirPagamento(${idx})"
-                                    style="width:18px;height:18px;cursor:pointer;accent-color:#26d9a0"/>
-                            </td>
-                            <td style="display:flex;gap:6px;align-items:center">
-                                <button class="btn-edit" onclick="editarObjetivo(${idx})">✏️</button>
-                                <button class="btn-del" onclick="deletarObjetivo(${idx})">✕</button>
-                            </td>
-                        </tr>`;
-                    }).join('')}
-                </tbody>
-            </table>`}
-        </div>
-    `;
-}
-
-function paginaFinbot() {
-    return `
-        <div class="section-title">🤖 FinBot — Agente Financeiro</div>
-        <div class="finbot-wrap">
-            <div class="finbot-header">
-                <div class="finbot-avatar">🤖</div>
-                <div><div class="finbot-name">FinBot</div><div class="finbot-status">Em breve</div></div>
-            </div>
-            <div class="msgs" id="finbotMsgs">
-                <div class="msg bot">
-                    <div class="msg-bubble">👋 O FinBot estará disponível em breve. Estamos configurando o servidor para manter sua chave de API segura.</div>
-                </div>
-            </div>
-        </div>
-    `;
-}
-
 // ── EXPÕE FUNÇÕES ──
-window.salvarSalario = salvarSalario;
-window.salvarGasto = salvarGasto;
-window.deletarGasto = deletarGasto;
-window.editarGasto = editarGasto;
-window.togglePagoGasto = togglePagoGasto;
-window.salvarFreelance = salvarFreelance;
-window.deletarFreelance = deletarFreelance;
-window.editarFreelance = editarFreelance;
-window.filtrarFreelance = filtrarFreelance;
-window.toggleOutraPlataforma = toggleOutraPlataforma;
-window.salvarUber = salvarUber;
-window.deletarUber = deletarUber;
-window.editarUber = editarUber;
-window.mudarMesUber = mudarMesUber;
-window.mudarAnoUber = mudarAnoUber;
-window.salvarObjetivo = salvarObjetivo;
-window.deletarObjetivo = deletarObjetivo;
-window.editarObjetivo = editarObjetivo;
-window.calcularParcela = calcularParcela;
-window.abrirPagamento = abrirPagamento;
+Object.assign(window, {
+    logout, mudarMes,
+    abrirFonte, salvarEntrada, deletarEntrada,
+    abrirFormGasto, toggleParcelado, salvarGasto, editarGasto, deletarGasto, togglePagoGasto,
+})
+
+renderAba('home')
+carregarDados()
